@@ -238,7 +238,7 @@ app.get('/selfie/link', (req, res) => {
         'user_id='+encodeURIComponent(u)+
         '&transaction_id='+encodeURIComponent(t)+
         '&redirect_url='+encodeURIComponent(location.origin + location.pathname + '?callback=1');
-      window.open(ozUrl, 'ozLiveness', 'width=900,height=650');
+     location.href = ozUrl;
     }
 
     // عند الرجوع مع result_code
