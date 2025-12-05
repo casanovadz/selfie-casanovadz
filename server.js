@@ -21,6 +21,10 @@ const ENCRYPTION_IV  = process.env.ENCRYPTION_IV  || 'FORBES_IV_2024_SECRET';
 let selfieRecords = [];   // in-mem
 let statusRecords = {};   // in-mem
 let dataStorage = {};     // تخزين البيانات المؤقتة
+let sessionStorage = {};  // تخزين الجلسات
+
+// رابط BLS الثابت
+const BLS_LIVENESS_URL = 'https://algeria.blsspainglobal.com/dza/appointment/livenessrequest';
 
 // -------------------- Utils --------------------
 function generateId() {
@@ -59,25 +63,475 @@ function decryptData(b64) {
     }
 }
 
-// -------------------- API Endpoints --------------------
+// -------------------- API Endpoints الرئيسية --------------------
 app.get('/', (_, res) => res.json({
-    success: true, message: '🚀 Forbes Selfie Server is running',
-    version: '2.0.0', timestamp: new Date().toISOString(),
+    success: true, 
+    message: '🚀 Forbes Selfie Server is running',
+    version: '3.0.0', 
+    timestamp: new Date().toISOString(),
     endpoints: {
-        test: '/api/test', encrypt: '/api/encrypt', saveSelfie: '/api/save-selfie',
-        checkStatus: '/api/check-status', getResult: '/api/get-result',
-        selfieLink: '/selfie/link', debugEncrypt: '/api/debug-encrypt',
-        storeData: '/api/store-data', checkSelfieStatus: '/api/check-selfie-status',
-        openBls: '/open-bls'
+        test: '/api/test',
+        encrypt: '/api/encrypt',
+        saveSelfie: '/api/save-selfie',
+        checkStatus: '/api/check-status',
+        getResult: '/api/get-result',
+        selfieLink: '/selfie/link',
+        debugEncrypt: '/api/debug-encrypt',
+        storeData: '/api/store-data',
+        checkSelfieStatus: '/api/check-selfie-status',
+        openBls: '/open-bls',
+        blsSession: '/bls-session',
+        directLiveness: '/direct-liveness',
+        storeSession: '/api/store-session',
+        getSession: '/api/get-session'
     }
 }));
 
 app.get('/api/test', (_, res) => res.json({
-    success: true, status: 'ok', message: 'Forbes Selfie Server is working ✅',
-    server_time: new Date().toISOString(), uptime: process.uptime(),
-    memory_usage: process.memoryUsage()
+    success: true, 
+    status: 'ok', 
+    message: 'Forbes Selfie Server is working ✅',
+    server_time: new Date().toISOString(), 
+    uptime: process.uptime(),
+    memory_usage: process.memoryUsage(),
+    sessions_count: Object.keys(sessionStorage).length,
+    data_storage_count: Object.keys(dataStorage).length
 }));
 
+// -------------------- إدارة الجلسات --------------------
+// تخزين جلسة BLS
+app.post('/api/store-session', (req, res) => {
+    try {
+        const { session_data } = req.body;
+        
+        if (!session_data) {
+            return res.status(400).json({ 
+                success: false, 
+                message: 'Session data required' 
+            });
+        }
+        
+        const sessionId = 'SESS_' + Date.now() + '_' + Math.random().toString(36).substr(2, 12);
+        
+        // تخزين الجلسة
+        sessionStorage[sessionId] = {
+            ...session_data,
+            stored_at: new Date().toISOString(),
+            expires_at: new Date(Date.now() + (30 * 60 * 1000)).toISOString() // 30 دقيقة
+        };
+        
+        // تنظيف الجلسات القديمة
+        const oneDayAgo = Date.now() - (24 * 60 * 60 * 1000);
+        Object.keys(sessionStorage).forEach(key => {
+            if (sessionStorage[key].stored_at && 
+                new Date(sessionStorage[key].stored_at).getTime() < oneDayAgo) {
+                delete sessionStorage[key];
+            }
+        });
+        
+        res.json({
+            success: true,
+            session_id: sessionId,
+            message: 'Session stored successfully',
+            expires_in: '30 minutes'
+        });
+        
+    } catch (e) {
+        res.status(500).json({ 
+            success: false, 
+            message: 'Session storage failed', 
+            error: e.message 
+        });
+    }
+});
+
+// استرجاع جلسة BLS
+app.get('/api/get-session', (req, res) => {
+    try {
+        const { session_id } = req.query;
+        
+        if (!session_id) {
+            return res.status(400).json({ 
+                success: false, 
+                message: 'Session ID required' 
+            });
+        }
+        
+        const session = sessionStorage[session_id];
+        
+        if (!session) {
+            return res.json({ 
+                success: false, 
+                message: 'Session not found or expired' 
+            });
+        }
+        
+        // التحقق من انتهاء الصلاحية
+        if (session.expires_at && new Date(session.expires_at).getTime() < Date.now()) {
+            delete sessionStorage[session_id];
+            return res.json({ 
+                success: false, 
+                message: 'Session expired' 
+            });
+        }
+        
+        res.json({
+            success: true,
+            session_id: session_id,
+            session_data: session,
+            is_valid: true
+        });
+        
+    } catch (e) {
+        res.status(500).json({ 
+            success: false, 
+            message: 'Get session failed', 
+            error: e.message 
+        });
+    }
+});
+
+// تخزين بيانات السيلفي المباشر
+app.post('/api/store-liveness-data', (req, res) => {
+    try {
+        const { form_data, page_url } = req.body;
+        
+        if (!form_data) {
+            return res.status(400).json({ 
+                success: false, 
+                message: 'Form data required' 
+            });
+        }
+        
+        const dataId = 'LIV_' + Date.now() + '_' + Math.random().toString(36).substr(2, 12);
+        
+        // تخزين البيانات
+        dataStorage[dataId] = {
+            form_data: form_data,
+            page_url: page_url || 'https://algeria.blsspainglobal.com/dza/appointment/livenessrequest',
+            stored_at: new Date().toISOString(),
+            expires_at: new Date(Date.now() + (60 * 60 * 1000)).toISOString() // ساعة واحدة
+        };
+        
+        res.json({
+            success: true,
+            data_id: dataId,
+            message: 'Liveness data stored successfully',
+            expires_in: '1 hour'
+        });
+        
+    } catch (e) {
+        res.status(500).json({ 
+            success: false, 
+            message: 'Data storage failed', 
+            error: e.message 
+        });
+    }
+});
+
+// صفحة الجلسة
+app.get('/bls-session', (req, res) => {
+    try {
+        const { session_id, return_url } = req.query;
+        
+        if (!session_id) {
+            return res.status(400).send(`
+                <html>
+                <body style="font-family: Arial; text-align: center; padding: 50px;">
+                    <h2 style="color: #F44336;">❌ معرّف الجلسة مطلوب</h2>
+                    <p>يرجى توفير معرّف الجلسة في الرابط</p>
+                </body>
+                </html>
+            `);
+        }
+        
+        const session = sessionStorage[session_id];
+        
+        if (!session) {
+            return res.send(`
+                <html>
+                <body style="font-family: Arial; text-align: center; padding: 50px;">
+                    <h2 style="color: #F44336;">❌ الجلسة غير موجودة أو منتهية الصلاحية</h2>
+                    <p>يرجى إنشاء جلسة جديدة من صفحة المدير</p>
+                    <a href="${return_url || 'https://algeria.blsspainglobal.com'}" 
+                       style="color: #2196F3; text-decoration: none; padding: 10px 20px; background: #E3F2FD; border-radius: 5px;">
+                       العودة للصفحة الرئيسية
+                    </a>
+                </body>
+                </html>
+            `);
+        }
+        
+        const targetUrl = session.page_url || 'https://algeria.blsspainglobal.com';
+        
+        // صفحة الجلسة مع إعادة التوجيه
+        const html = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <title>BLS Session Handler</title>
+            <meta http-equiv="refresh" content="3;url=${targetUrl}">
+            <style>
+                body {
+                    font-family: Arial, sans-serif;
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    height: 100vh;
+                    margin: 0;
+                }
+                .container {
+                    background: white;
+                    padding: 40px;
+                    border-radius: 15px;
+                    text-align: center;
+                    box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+                    max-width: 500px;
+                    width: 90%;
+                }
+                .loader {
+                    border: 4px solid #f3f3f3;
+                    border-top: 4px solid #3498db;
+                    border-radius: 50%;
+                    width: 40px;
+                    height: 40px;
+                    animation: spin 1s linear infinite;
+                    margin: 20px auto;
+                }
+                @keyframes spin {
+                    0% { transform: rotate(0deg); }
+                    100% { transform: rotate(360deg); }
+                }
+                .info {
+                    background: #f5f5f5;
+                    padding: 15px;
+                    border-radius: 8px;
+                    margin: 20px 0;
+                    font-size: 14px;
+                    color: #666;
+                }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h2 style="color: #4CAF50;">✅ جلسة BLS جاهزة</h2>
+                <div class="info">
+                    <strong>معلومات الجلسة:</strong><br>
+                    معرف الجلسة: ${session_id.substring(0, 20)}...<br>
+                    وقت التخزين: ${new Date(session.stored_at).toLocaleString('ar-SA')}
+                </div>
+                <div class="loader"></div>
+                <p>جاري التوجيه إلى صفحة BLS...</p>
+                <p style="font-size: 12px; color: #666;">
+                    <a href="${targetUrl}" target="_blank" style="color: #2196F3;">
+                        انقر هنا إذا لم يتم التوجيه تلقائياً
+                    </a>
+                </p>
+            </div>
+            <script>
+                // محاولة فتح الصفحة في نافذة جديدة
+                setTimeout(() => {
+                    window.open('${targetUrl}', '_blank');
+                }, 1000);
+            </script>
+        </body>
+        </html>
+        `;
+        
+        res.send(html);
+        
+    } catch (e) {
+        res.status(500).send(`
+            <html>
+            <body style="font-family: Arial; text-align: center; padding: 50px;">
+                <h2 style="color: #F44336;">❌ خطأ في الجلسة</h2>
+                <p>${e.message}</p>
+            </body>
+            </html>
+        `);
+    }
+});
+
+// صفحة السيلفي المباشر
+app.get('/direct-liveness', (req, res) => {
+    try {
+        const { data_id } = req.query;
+        
+        if (!data_id) {
+            return res.status(400).send(`
+                <html>
+                <body style="font-family: Arial; text-align: center; padding: 50px;">
+                    <h2 style="color: #F44336;">❌ معرّف البيانات مطلوب</h2>
+                    <p>يرجى توفير معرّف البيانات في الرابط</p>
+                </body>
+                </html>
+            `);
+        }
+        
+        const data = dataStorage[data_id];
+        
+        if (!data || !data.form_data) {
+            return res.send(`
+                <html>
+                <body style="font-family: Arial; text-align: center; padding: 50px;">
+                    <h2 style="color: #F44336;">❌ البيانات غير موجودة</h2>
+                    <p>يرجى إنشاء رابط جديد من صفحة المدير</p>
+                </body>
+                </html>
+            `);
+        }
+        
+        // إنشاء صفحة HTML مع بيانات الفورم
+        const formData = data.form_data;
+        const formFields = Object.keys(formData)
+            .map(key => {
+                if (key === '__RequestVerificationToken') {
+                    return `<input type="hidden" name="${key}" value="${formData[key]}" />`;
+                }
+                return `<input type="hidden" id="${key}" name="${key}" value="${formData[key]}" />`;
+            })
+            .join('\n');
+        
+        const html = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <title>BLS Liveness Verification</title>
+            <style>
+                body {
+                    font-family: Arial, sans-serif;
+                    background: #f0f2f5;
+                    padding: 20px;
+                }
+                .container {
+                    max-width: 600px;
+                    margin: 0 auto;
+                    background: white;
+                    padding: 30px;
+                    border-radius: 10px;
+                    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+                }
+                .header {
+                    text-align: center;
+                    margin-bottom: 30px;
+                }
+                .info-box {
+                    background: #e3f2fd;
+                    padding: 15px;
+                    border-radius: 5px;
+                    margin-bottom: 20px;
+                    font-size: 14px;
+                    color: #1565c0;
+                }
+                .btn {
+                    background: #4CAF50;
+                    color: white;
+                    border: none;
+                    padding: 12px 30px;
+                    border-radius: 5px;
+                    cursor: pointer;
+                    font-size: 16px;
+                    font-weight: bold;
+                    transition: background 0.3s;
+                }
+                .btn:hover {
+                    background: #45a049;
+                }
+                .btn-secondary {
+                    background: #2196F3;
+                }
+                .btn-secondary:hover {
+                    background: #1976d2;
+                }
+                .countdown {
+                    font-size: 24px;
+                    font-weight: bold;
+                    color: #4CAF50;
+                    margin: 10px 0;
+                }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h2 style="color: #2c3e50;">📸 تحقق بالصورة (Liveness Detection)</h2>
+                    <p style="color: #7f8c8d;">BLS International - Spain Visa Application</p>
+                </div>
+                
+                <div class="info-box">
+                    <strong>⚠️ تنبيه:</strong> هذا النموذج تم تحميله تلقائياً من جلسة المدير
+                </div>
+                
+                <form id="livenessForm" method="post" action="https://algeria.blsspainglobal.com/dza/appointment/livenessrequest">
+                    ${formFields}
+                    
+                    <div style="text-align: center; margin-top: 30px;">
+                        <div class="countdown" id="countdown">5</div>
+                        <p style="margin-bottom: 20px; color: #666;">
+                            سيتم إرسال النموذج تلقائياً خلال <span id="seconds">5</span> ثوانٍ
+                        </p>
+                        <button type="button" onclick="submitFormNow()" class="btn">
+                            🚀 إرسال الآن
+                        </button>
+                        <br><br>
+                        <button type="button" onclick="window.close()" class="btn btn-secondary">
+                            ✕ إغلاق الصفحة
+                        </button>
+                    </div>
+                </form>
+            </div>
+            
+            <script>
+                // العد التنازلي
+                let countdown = 5;
+                const countdownEl = document.getElementById('countdown');
+                const secondsEl = document.getElementById('seconds');
+                
+                const countdownInterval = setInterval(() => {
+                    countdown--;
+                    countdownEl.textContent = countdown;
+                    secondsEl.textContent = countdown;
+                    
+                    if (countdown <= 0) {
+                        clearInterval(countdownInterval);
+                        submitFormNow();
+                    }
+                }, 1000);
+                
+                function submitFormNow() {
+                    clearInterval(countdownInterval);
+                    document.getElementById('livenessForm').submit();
+                }
+                
+                // الإرسال التلقائي بعد 5 ثوانٍ
+                setTimeout(() => {
+                    if (countdown > 0) {
+                        submitFormNow();
+                    }
+                }, 5000);
+            </script>
+        </body>
+        </html>
+        `;
+        
+        res.send(html);
+        
+    } catch (e) {
+        res.status(500).send(`
+            <html>
+            <body style="font-family: Arial; text-align: center; padding: 50px;">
+                <h2 style="color: #F44336;">❌ خطأ في تحميل البيانات</h2>
+                <p>${e.message}</p>
+            </body>
+            </html>
+        `);
+    }
+});
+
+// -------------------- نقاط النهاية الأساسية --------------------
 app.post('/api/encrypt', (req, res) => {
     try {
         const { data } = req.body;
@@ -283,9 +737,6 @@ app.get('/open-bls', (req, res) => {
     try {
         const { data, redirect } = req.query;
         
-        // رابط BLS الرسمي للسيلفي
-        const BLS_LIVENESS_URL = 'https://algeria.blsspainglobal.com/dza/appointment/livenessrequest';
-        
         // حفظ بيانات الجلسة
         if (data) {
             if (!dataStorage[data]) {
@@ -488,29 +939,6 @@ app.get('/open-bls', (req, res) => {
                 setTimeout(() => {
                     window.open('${BLS_LIVENESS_URL}', '_blank');
                 }, 500);
-                
-                // تحديث حالة الخادم
-                async function updateServerStatus() {
-                    try {
-                        const response = await fetch('/api/check-selfie-status?id=${encodeURIComponent(data || '')}');
-                        const result = await response.json();
-                        
-                        if (result.status === 'completed') {
-                            // إذا اكتمل السيلفي، عد للصفحة الأصلية
-                            if (window.opener) {
-                                window.opener.postMessage({
-                                    type: 'FORBES_SELFIE_COMPLETE',
-                                    result_code: result.result_code
-                                }, '*');
-                            }
-                        }
-                    } catch (error) {
-                        console.log('Server status check failed:', error);
-                    }
-                }
-                
-                // تحقق من الحالة كل 10 ثوانٍ
-                setInterval(updateServerStatus, 10000);
             </script>
         </body>
         </html>`;
@@ -608,13 +1036,12 @@ app.get('/selfie/link', (req, res) => {
       log('Opening real OzLiveness...');
       status('⏳ Opening camera...',true);
       const [u,t] = plain.split(',');
-      const ozUrl = 'https://liveness.ozforensics.com/verify?' + // غيّر إلى الرابط الحقيقي
+      const ozUrl = 'https://liveness.ozforensics.com/verify?' +
         'user_id='+encodeURIComponent(u)+
         '&transaction_id='+encodeURIComponent(t)+
         '&redirect_url='+encodeURIComponent(location.origin + location.pathname + '?callback=1');
         location.href = ozUrl;
        }
-
 
     // عند الرجوع مع result_code
     window.addEventListener('DOMContentLoaded', ()=>{
@@ -669,28 +1096,89 @@ app.get('/api/debug-encrypt', (_, res) => {
     const plain = '123456,789012';
     const enc   = encryptData(plain);
     const dec   = decryptData(enc);
-    res.json({ success: true, test_data: plain, encrypted: enc, decrypted: dec, encryption_works: plain === dec });
+    res.json({ 
+        success: true, 
+        test_data: plain, 
+        encrypted: enc, 
+        decrypted: dec, 
+        encryption_works: plain === dec,
+        key_length: ENCRYPTION_KEY.length,
+        encryption_method: 'AES-256-CBC'
+    });
+});
+
+// نقطة نهاية جديدة لاختبار BLS
+app.get('/test-bls', (req, res) => {
+    res.json({
+        success: true,
+        bls_url: BLS_LIVENESS_URL,
+        test_time: new Date().toISOString(),
+        server_status: 'active'
+    });
 });
 
 // -------------------- 404 & 500 --------------------
-app.use((req, res) => res.status(404).json({ success: false, message: 'Endpoint not found' }));
+app.use((req, res) => res.status(404).json({ 
+    success: false, 
+    message: 'Endpoint not found',
+    requested_url: req.url,
+    available_endpoints: [
+        '/',
+        '/api/test',
+        '/api/encrypt',
+        '/api/store-data',
+        '/api/check-selfie-status',
+        '/api/save-selfie',
+        '/api/check-status',
+        '/api/get-result',
+        '/selfie/link',
+        '/open-bls',
+        '/bls-session',
+        '/direct-liveness',
+        '/api/store-session',
+        '/api/get-session'
+    ]
+}));
+
 app.use((err, req, res, next) => {
-    console.error('Unhandled:', err);
-    res.status(500).json({ success: false, message: 'Internal error', error: process.env.NODE_ENV === 'production' ? null : err.message });
+    console.error('Unhandled error:', err);
+    res.status(500).json({ 
+        success: false, 
+        message: 'Internal server error',
+        error: process.env.NODE_ENV === 'production' ? 'Contact administrator' : err.message,
+        timestamp: new Date().toISOString()
+    });
 });
 
 // -------------------- Listen --------------------
 app.listen(PORT, () => console.log(`
 🚀 Forbes Selfie Server running!
 📍 Local: http://localhost:${PORT}
-🔗 Open BLS: http://localhost:${PORT}/open-bls
+🔗 Test BLS: ${BLS_LIVENESS_URL}
 📊 API Endpoints:
   - GET  /api/test
   - POST /api/encrypt
   - POST /api/store-data
   - GET  /api/check-selfie-status
   - GET  /open-bls?data=ID&redirect=URL
+  - GET  /bls-session?session_id=ID
+  - GET  /direct-liveness?data_id=ID
+  - POST /api/store-session
+  - GET  /api/get-session?session_id=ID
+
+📈 Storage Stats:
+  - Sessions: ${Object.keys(sessionStorage).length}
+  - Data Records: ${Object.keys(dataStorage).length}
+  - Selfie Records: ${selfieRecords.length}
+  - Status Records: ${Object.keys(statusRecords).length}
 `));
 
-process.on('SIGTERM', () => (console.log('SIGTERM'), process.exit(0)));
-process.on('SIGINT',  () => (console.log('SIGINT'),  process.exit(0)));
+process.on('SIGTERM', () => {
+    console.log('SIGTERM received, shutting down gracefully');
+    process.exit(0);
+});
+
+process.on('SIGINT', () => {
+    console.log('SIGINT received, shutting down gracefully');
+    process.exit(0);
+});
