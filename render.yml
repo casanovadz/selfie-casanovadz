@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: forbes-selfie-server
+    env: node
+    region: frankfurt  # أو oregon حسب موقعك
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /api/test
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
