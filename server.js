@@ -70,82 +70,32 @@ function encryptData(text) {
     }
 }
 
-// Decryption function - FIXED VERSION
 function decryptData(encryptedText) {
-    try {
-        console.log('Decrypting data:', {
-            input_length: encryptedText?.length,
-            input_preview: encryptedText?.substring(0, 50)
-        });
-        
-        // First try: Check if it's base64
-        if (!encryptedText) {
-            throw new Error('Empty encrypted text');
-        }
-        
-        // Option 1: Try hex (original method)
-        try {
-            const decipher = crypto.createDecipheriv('aes-256-cbc',
-                Buffer.from(ENCRYPTION_KEY.padEnd(32).slice(0, 32)),
-                Buffer.from(ENCRYPTION_IV.padEnd(16).slice(0, 16))
-            );
-            let decrypted = decipher.update(encryptedText, 'hex', 'utf8');
-            decrypted += decipher.final('utf8');
-            console.log('Hex decryption successful');
-            return decrypted;
-        } catch (hexError) {
-            console.log('Hex decryption failed, trying base64...');
-        }
-        
-        // Option 2: Try base64 (most likely from browser)
-        try {
-            const encryptedBuffer = Buffer.from(encryptedText, 'base64');
-            const iv = encryptedBuffer.slice(0, 16);
-            const encrypted = encryptedBuffer.slice(16);
-            
-            const decipher = crypto.createDecipheriv('aes-256-cbc', 
-                Buffer.from(ENCRYPTION_KEY.padEnd(32).slice(0, 32)), 
-                iv
-            );
-            let decrypted = decipher.update(encrypted);
-            decrypted = Buffer.concat([decrypted, decipher.final()]);
-            console.log('Base64 decryption successful');
-            return decrypted.toString('utf8');
-        } catch (base64Error) {
-            console.log('Base64 decryption failed:', base64Error.message);
-        }
-        
-        // Option 3: Try URL decode first
-        try {
-            const decodedText = decodeURIComponent(encryptedText);
-            if (decodedText !== encryptedText) {
-                console.log('URL decoded, retrying decryption...');
-                return decryptData(decodedText);
-            }
-        } catch (urlError) {
-            console.log('URL decode failed:', urlError.message);
-        }
-        
-        // Option 4: If all fails, try to parse as plain text
-        if (encryptedText.includes(',')) {
-            const parts = encryptedText.split(',');
-            if (parts.length === 2 && parts[0].trim() && parts[1].trim()) {
-                console.log('Parsing as plain text (user_id,transaction_id)');
-                return encryptedText;
-            }
-        }
-        
-        throw new Error('All decryption methods failed');
-        
-    } catch (error) {
-        console.error('Decryption error:', {
-            message: error.message,
-            input: encryptedText?.substring(0, 100)
-        });
-        
-        // Return the original text as fallback
-        return encryptedText;
+  if (!encryptedText) return null;
+
+  try {
+    // ✅ المحاولة الأولى: Base64 (IV + Cipher) ← الصحيحة
+    const buf = Buffer.from(encryptedText, 'base64');
+    if (buf.length >= 32) { // 16 IV + 16 على الأقل للنص
+      const iv = buf.slice(0, 16);
+      const cipherText = buf.slice(16);
+
+      const decipher = crypto.createDecipheriv(
+        'aes-256-cbc',
+        Buffer.from(ENCRYPTION_KEY.padEnd(32).slice(0, 32)),
+        iv
+      );
+
+      let decrypted = decipher.update(cipherText);
+      decrypted = Buffer.concat([decrypted, decipher.final()]);
+      return decrypted.toString('utf8');
     }
+  } catch (e) {
+    console.log('Base64 AES failed:', e.message);
+  }
+
+  // ✅ إذا فشلت، أعد النص كما هو (للتوافق)
+  return encryptedText;
 }
 
 // ============================================
