@@ -1150,14 +1150,913 @@ app.use((err, req, res, next) => {
     });
 });
 
+// =========================================================
+// 🎭 IP SPOOFING SYSTEM - لتوحيد IP بين المدير والزبون
+// =========================================================
+
+// تخزين بيانات IP للتزييف
+let ipSpoofStorage = {};
+
+// -------------------- 1. تخزين بيانات IP للتزييف --------------------
+app.post('/api/ip-spoof', (req, res) => {
+    try {
+        const { 
+            action = 'store_ip_data',
+            admin_ip,
+            client_ip,
+            spoof_ip,        // ✅ IP الذي سيتم استخدامه (عادةً IP المدير)
+            target_ip,       // ✅ IP الهدف (للتحقق)
+            user_agent,
+            source = 'forbes_extension'
+        } = req.body;
+
+        if (!admin_ip || !spoof_ip) {
+            return res.status(400).json({ 
+                success: false, 
+                message: 'admin_ip and spoof_ip are required' 
+            });
+        }
+
+        const spoofId = 'SPOOF_' + Date.now() + '_' + Math.random().toString(36).substr(2, 12);
+        
+        // تخزين بيانات IP
+        ipSpoofStorage[spoofId] = {
+            spoof_id: spoofId,
+            admin_ip,
+            client_ip: client_ip || admin_ip,
+            spoof_ip,          // ✅ هذا هو الـ IP الذي سيتم استخدامه
+            target_ip: target_ip || admin_ip,
+            user_agent: user_agent || req.get('User-Agent') || 'unknown',
+            source,
+            stored_at: new Date().toISOString(),
+            expires_at: new Date(Date.now() + (60 * 60 * 1000)).toISOString(), // ساعة واحدة
+            headers_to_spoof: [
+                'X-Forwarded-For',
+                'X-Real-IP',
+                'X-Client-IP',
+                'CF-Connecting-IP',
+                'True-Client-IP',
+                'Forwarded',
+                'X-Originating-IP'
+            ],
+            status: 'active'
+        };
+
+        // تنظيف البيانات القديمة
+        const oneDayAgo = Date.now() - (24 * 60 * 60 * 1000);
+        Object.keys(ipSpoofStorage).forEach(key => {
+            if (new Date(ipSpoofStorage[key].stored_at).getTime() < oneDayAgo) {
+                delete ipSpoofStorage[key];
+            }
+        });
+
+        res.json({
+            success: true,
+            spoof_id: spoofId,
+            spoof_ip: spoof_ip,
+            message: 'IP spoofing data stored successfully',
+            expires_in: '1 hour',
+            headers_count: ipSpoofStorage[spoofId].headers_to_spoof.length
+        });
+
+    } catch (e) {
+        res.status(500).json({ 
+            success: false, 
+            message: 'IP spoofing storage failed', 
+            error: e.message 
+        });
+    }
+});
+
+// -------------------- 2. استرجاع بيانات IP للتزييف --------------------
+app.get('/api/get-spoof-ip', (req, res) => {
+    try {
+        const { spoof_id, target_ip } = req.query;
+
+        if (!spoof_id) {
+            return res.status(400).json({ 
+                success: false, 
+                message: 'spoof_id is required' 
+            });
+        }
+
+        const spoofData = ipSpoofStorage[spoof_id];
+
+        if (!spoofData) {
+            return res.json({ 
+                success: false, 
+                message: 'Spoof data not found or expired' 
+            });
+        }
+
+        // التحقق من انتهاء الصلاحية
+        if (spoofData.expires_at && new Date(spoofData.expires_at).getTime() < Date.now()) {
+            delete ipSpoofStorage[spoof_id];
+            return res.json({ 
+                success: false, 
+                message: 'Spoof data expired' 
+            });
+        }
+
+        // إذا كان هناك target_ip للتحقق منه
+        if (target_ip && spoofData.target_ip !== target_ip) {
+            return res.json({ 
+                success: false, 
+                message: 'Target IP does not match' 
+            });
+        }
+
+        res.json({
+            success: true,
+            spoof_id: spoofData.spoof_id,
+            spoof_ip: spoofData.spoof_ip,
+            admin_ip: spoofData.admin_ip,
+            client_ip: spoofData.client_ip,
+            headers_to_spoof: spoofData.headers_to_spoof,
+            user_agent: spoofData.user_agent,
+            stored_at: spoofData.stored_at,
+            expires_at: spoofData.expires_at,
+            javascript_injection: generateIPSpoofingScript(spoofData.spoof_ip)
+        });
+
+    } catch (e) {
+        res.status(500).json({ 
+            success: false, 
+            message: 'Get spoof IP failed', 
+            error: e.message 
+        });
+    }
+});
+
+// -------------------- 3. إنشاء سكريبت IP Spoofing --------------------
+function generateIPSpoofingScript(spoofIP) {
+    return `
+        // == IP SPOOFING INJECTION ==
+        (function() {
+            const SPOOF_IP = "${spoofIP}";
+            const SPOOF_HEADERS = [
+                'X-Forwarded-For',
+                'X-Real-IP', 
+                'X-Client-IP',
+                'CF-Connecting-IP',
+                'True-Client-IP',
+                'Forwarded',
+                'X-Originating-IP'
+            ];
+            
+            console.log('🎭 IP Spoofing Activated - Using IP:', SPOOF_IP);
+            
+            // 1. تعديل fetch API
+            const originalFetch = window.fetch;
+            window.fetch = function(resource, init = {}) {
+                const headers = new Headers(init.headers || {});
+                
+                // إضافة headers IP مزيفة
+                SPOOF_HEADERS.forEach(header => {
+                    headers.set(header, SPOOF_IP);
+                });
+                
+                // تعديل User-Agent ليطابق جهاز المدير
+                headers.set('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36');
+                
+                // إضافة headers أمنية
+                headers.set('sec-ch-ua', '"Chromium";v="136", "Google Chrome";v="136", "Not.A/Brand";v="99"');
+                headers.set('sec-ch-ua-platform', '"Windows"');
+                headers.set('sec-ch-ua-mobile', '?0');
+                
+                init.headers = headers;
+                
+                console.log('🎭 Fetch with spoofed IP:', SPOOF_IP, '->', resource);
+                return originalFetch.call(this, resource, init);
+            };
+            
+            // 2. تعديل XMLHttpRequest
+            const originalOpen = XMLHttpRequest.prototype.open;
+            const originalSend = XMLHttpRequest.prototype.send;
+            
+            XMLHttpRequest.prototype.open = function(method, url) {
+                this._spoofHeaders = {};
+                const originalSetRequestHeader = this.setRequestHeader;
+                
+                this.setRequestHeader = function(header, value) {
+                    // تزييف headers IP
+                    if (SPOOF_HEADERS.some(h => header.toLowerCase().includes(h.toLowerCase()))) {
+                        console.log('🎭 Spoofing header:', header, '->', SPOOF_IP);
+                        originalSetRequestHeader.call(this, header, SPOOF_IP);
+                        this._spoofHeaders[header] = SPOOF_IP;
+                    } else if (header.toLowerCase() === 'user-agent') {
+                        const spoofUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36';
+                        console.log('🎭 Spoofing User-Agent');
+                        originalSetRequestHeader.call(this, header, spoofUA);
+                        this._spoofHeaders[header] = spoofUA;
+                    } else {
+                        originalSetRequestHeader.call(this, header, value);
+                        this._spoofHeaders[header] = value;
+                    }
+                };
+                
+                return originalOpen.apply(this, arguments);
+            };
+            
+            // 3. تعديل document.cookie ليشمل معلومات IP
+            Object.defineProperty(document, 'cookie', {
+                get: function() {
+                    return document._cookie || '';
+                },
+                set: function(value) {
+                    document._cookie = value;
+                    // إضافة معلومات IP إلى الكوكيز
+                    if (!value.includes('client_ip=')) {
+                        document._cookie += '; client_ip=' + SPOOF_IP;
+                    }
+                    return value;
+                }
+            });
+            
+            // 4. تعديل localStorage لإضافة معلومات IP
+            const originalSetItem = localStorage.setItem;
+            localStorage.setItem = function(key, value) {
+                // إضافة IP إلى البيانات المخزنة
+                if (typeof value === 'string' && !value.includes('spoof_ip')) {
+                    try {
+                        const data = JSON.parse(value);
+                        data.spoof_ip = SPOOF_IP;
+                        data.spoofed_at = new Date().toISOString();
+                        value = JSON.stringify(data);
+                    } catch (e) {
+                        // إذا لم يكن JSON، نضيف كمعلمة
+                        if (!value.includes('spoof_ip=')) {
+                            value += '&spoof_ip=' + SPOOF_IP;
+                        }
+                    }
+                }
+                return originalSetItem.call(this, key, value);
+            };
+            
+            // 5. تعديل window.location لإضافة IP إلى الـ URL
+            const originalLocation = window.location;
+            Object.defineProperty(window, 'location', {
+                get: function() {
+                    return originalLocation;
+                },
+                set: function(value) {
+                    if (typeof value === 'string') {
+                        const url = new URL(value, window.location.origin);
+                        if (!url.searchParams.has('client_ip')) {
+                            url.searchParams.set('client_ip', SPOOF_IP);
+                        }
+                        value = url.toString();
+                    }
+                    originalLocation.href = value;
+                }
+            });
+            
+            console.log('✅ IP Spoofing system injected successfully');
+            
+            // 6. تحديث جميع الصفحات المفتوحة
+            if (window.opener) {
+                try {
+                    window.opener.postMessage({
+                        type: 'IP_SPOOF_INJECTED',
+                        spoof_ip: SPOOF_IP,
+                        timestamp: new Date().toISOString()
+                    }, '*');
+                } catch (e) {
+                    console.log('Could not notify opener window');
+                }
+            }
+            
+            // 7. بث لجميع النوافذ
+            if (typeof BroadcastChannel !== 'undefined') {
+                try {
+                    const channel = new BroadcastChannel('ip_spoof_channel');
+                    channel.postMessage({
+                        type: 'IP_SPOOF_ACTIVE',
+                        ip: SPOOF_IP,
+                        time: new Date().toISOString()
+                    });
+                    setTimeout(() => channel.close(), 1000);
+                } catch (e) {
+                    console.log('BroadcastChannel not available');
+                }
+            }
+            
+        })();
+    `;
+}
+
+// -------------------- 4. صفحة فتح BLS مع IP Spoofing --------------------
+app.get('/open-bls-spoof', (req, res) => {
+    try {
+        const { 
+            data,            // معرف البيانات
+            spoof_ip,        // ✅ IP الذي سيتم استخدامه للتزييف
+            redirect,        // رابط العودة
+            spoof_id         // معرف التزييف (اختياري)
+        } = req.query;
+
+        if (!data || !spoof_ip) {
+            return res.status(400).send(`
+                <html>
+                <body style="font-family: Arial; text-align: center; padding: 50px;">
+                    <h2 style="color: #F44336;">❌ بيانات غير كافية</h2>
+                    <p>الرجاء توفير data و spoof_ip</p>
+                </body>
+                </html>
+            `);
+        }
+
+        // حفظ بيانات التزييف
+        const spoofData = {
+            spoof_id: spoof_id || 'SPOOF_' + Date.now(),
+            spoof_ip: spoof_ip,
+            data_id: data,
+            redirect_url: redirect,
+            stored_at: new Date().toISOString(),
+            user_agent: req.get('User-Agent') || 'unknown'
+        };
+        
+        ipSpoofStorage[spoofData.spoof_id] = spoofData;
+
+        // إنشاء صفحة HTML مع IP Spoofing
+        const html = `
+        <!DOCTYPE html>
+        <html lang="ar" dir="rtl">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>BLS Liveness مع IP Spoofing</title>
+            <style>
+                * {
+                    margin: 0;
+                    padding: 0;
+                    box-sizing: border-box;
+                    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                }
+                
+                body {
+                    background: linear-gradient(135deg, #0d47a1 0%, #311b92 100%);
+                    color: white;
+                    min-height: 100vh;
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    padding: 20px;
+                }
+                
+                .container {
+                    background: rgba(255, 255, 255, 0.95);
+                    color: #333;
+                    padding: 30px;
+                    border-radius: 15px;
+                    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+                    text-align: center;
+                    max-width: 600px;
+                    width: 100%;
+                }
+                
+                .header {
+                    margin-bottom: 20px;
+                }
+                
+                .logo {
+                    font-size: 60px;
+                    color: #4A148C;
+                    margin-bottom: 15px;
+                }
+                
+                h1 {
+                    color: #2c3e50;
+                    margin-bottom: 10px;
+                    font-size: 24px;
+                }
+                
+                .subtitle {
+                    color: #7f8c8d;
+                    font-size: 14px;
+                    margin-bottom: 20px;
+                }
+                
+                .spoof-info {
+                    background: linear-gradient(to right, #4A148C, #7B1FA2);
+                    color: white;
+                    padding: 15px;
+                    border-radius: 8px;
+                    margin: 15px 0;
+                    text-align: right;
+                    font-size: 14px;
+                }
+                
+                .spoof-info strong {
+                    color: #FFD700;
+                }
+                
+                .status {
+                    margin: 20px 0;
+                }
+                
+                .loader {
+                    border: 3px solid #f3f3f3;
+                    border-top: 3px solid #4A148C;
+                    border-radius: 50%;
+                    width: 30px;
+                    height: 30px;
+                    animation: spin 1s linear infinite;
+                    margin: 0 auto;
+                }
+                
+                @keyframes spin {
+                    0% { transform: rotate(0deg); }
+                    100% { transform: rotate(360deg); }
+                }
+                
+                .status-text {
+                    margin-top: 10px;
+                    font-weight: bold;
+                    color: #4A148C;
+                }
+                
+                .btn {
+                    background: linear-gradient(135deg, #4A148C 0%, #7B1FA2 100%);
+                    color: white;
+                    border: none;
+                    padding: 12px 30px;
+                    border-radius: 25px;
+                    font-size: 16px;
+                    font-weight: bold;
+                    cursor: pointer;
+                    transition: all 0.3s ease;
+                    margin-top: 15px;
+                    display: inline-flex;
+                    align-items: center;
+                    gap: 8px;
+                    text-decoration: none;
+                }
+                
+                .btn:hover {
+                    transform: translateY(-2px);
+                    box-shadow: 0 5px 15px rgba(74, 20, 140, 0.4);
+                }
+                
+                .btn-secondary {
+                    background: linear-gradient(135deg, #2196F3 0%, #0D47A1 100%);
+                }
+                
+                .btn-secondary:hover {
+                    box-shadow: 0 5px 15px rgba(33, 150, 243, 0.4);
+                }
+                
+                .footer {
+                    margin-top: 20px;
+                    padding-top: 15px;
+                    border-top: 1px solid #eee;
+                    color: #7f8c8d;
+                    font-size: 12px;
+                }
+                
+                .auto-redirect {
+                    margin-top: 15px;
+                    font-size: 14px;
+                    color: #666;
+                }
+                
+                .ip-display {
+                    font-family: monospace;
+                    background: #f8f9fa;
+                    padding: 8px 12px;
+                    border-radius: 5px;
+                    margin: 10px 0;
+                    font-size: 16px;
+                    color: #4A148C;
+                    font-weight: bold;
+                }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <div class="logo">🎭</div>
+                    <h1>نظام التحقق بالصورة مع IP Spoofing</h1>
+                    <p class="subtitle">BLS International - Algeria (نظام متقدم)</p>
+                </div>
+                
+                <div class="spoof-info">
+                    <p>🎭 <strong>نظام IP Spoofing مفعل</strong></p>
+                    <p>IP المستخدم: <strong>${spoof_ip}</strong></p>
+                    <p>معرف الجلسة: <strong>${spoofData.spoof_id.substring(0, 20)}...</strong></p>
+                    <p>جميع طلبات BLS ستستخدم هذا الـ IP تلقائياً</p>
+                </div>
+                
+                <div class="ip-display">
+                    🔒 IP المزيف: ${spoof_ip}
+                </div>
+                
+                <div class="status">
+                    <div class="loader"></div>
+                    <div class="status-text">🎭 جاري حقن IP Spoofing...</div>
+                </div>
+                
+                <div class="auto-redirect">
+                    <p>سيتم فتح صفحة التحقق خلال <span id="countdown">3</span> ثوانٍ</p>
+                    <p style="font-size: 12px; color: #666;">
+                        <em>ملاحظة: BLS سيرى أن جميع الطلبات من IP: ${spoof_ip}</em>
+                    </p>
+                </div>
+                
+                <div style="display: flex; gap: 10px; justify-content: center; margin-top: 20px;">
+                    <a href="${BLS_LIVENESS_URL}" target="_blank" class="btn">
+                        <span>🔗</span>
+                        افتح BLS مع IP Spoofing
+                    </a>
+                    
+                    <button onclick="testSpoofing()" class="btn btn-secondary">
+                        <span>🧪</span>
+                        اختبار النظام
+                    </button>
+                </div>
+                
+                <div class="footer">
+                    <p>Forbes Selfie System v3.0 | IP Spoofing Module | ${new Date().getFullYear()}</p>
+                </div>
+            </div>
+            
+            <script>
+                // =============== IP SPOOFING INJECTION ===============
+                const SPOOF_IP = "${spoof_ip}";
+                console.log('🎭 Starting IP Spoofing with:', SPOOF_IP);
+                
+                // 1. تعديل fetch API
+                const originalFetch = window.fetch;
+                window.fetch = function(resource, init = {}) {
+                    const headers = new Headers(init.headers || {});
+                    
+                    // إضافة headers IP مزيفة
+                    const spoofHeaders = {
+                        'X-Forwarded-For': SPOOF_IP,
+                        'X-Real-IP': SPOOF_IP,
+                        'X-Client-IP': SPOOF_IP,
+                        'CF-Connecting-IP': SPOOF_IP,
+                        'True-Client-IP': SPOOF_IP,
+                        'Forwarded': 'for=' + SPOOF_IP,
+                        'X-Originating-IP': SPOOF_IP
+                    };
+                    
+                    Object.entries(spoofHeaders).forEach(([key, value]) => {
+                        headers.set(key, value);
+                    });
+                    
+                    // User-Agent ثابت
+                    headers.set('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36');
+                    
+                    // إضافة headers أمنية
+                    headers.set('sec-ch-ua', '"Chromium";v="136", "Google Chrome";v="136", "Not.A/Brand";v="99"');
+                    headers.set('sec-ch-ua-platform', '"Windows"');
+                    headers.set('sec-ch-ua-mobile', '?0');
+                    
+                    init.headers = headers;
+                    
+                    console.log('🎭 Fetch with spoofed IP:', SPOOF_IP, '->', resource);
+                    return originalFetch.call(this, resource, init);
+                };
+                
+                // 2. تعديل XMLHttpRequest
+                const originalOpen = XMLHttpRequest.prototype.open;
+                XMLHttpRequest.prototype.open = function(method, url) {
+                    const originalSetRequestHeader = this.setRequestHeader;
+                    
+                    this.setRequestHeader = function(header, value) {
+                        // تزييف headers IP
+                        const ipHeaders = ['x-forwarded-for', 'x-real-ip', 'x-client-ip', 'cf-connecting-ip', 'true-client-ip'];
+                        if (ipHeaders.includes(header.toLowerCase())) {
+                            console.log('🎭 Spoofing header:', header, '->', SPOOF_IP);
+                            originalSetRequestHeader.call(this, header, SPOOF_IP);
+                        } else if (header.toLowerCase() === 'user-agent') {
+                            const spoofUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36';
+                            console.log('🎭 Spoofing User-Agent');
+                            originalSetRequestHeader.call(this, header, spoofUA);
+                        } else {
+                            originalSetRequestHeader.call(this, header, value);
+                        }
+                    };
+                    
+                    return originalOpen.apply(this, arguments);
+                };
+                
+                // 3. إضافة IP إلى localStorage
+                const originalSetItem = localStorage.setItem;
+                localStorage.setItem = function(key, value) {
+                    if (key.includes('bls') || key.includes('liveness') || key.includes('session')) {
+                        try {
+                            const data = JSON.parse(value);
+                            data.spoof_ip = SPOOF_IP;
+                            data.spoofed_at = new Date().toISOString();
+                            value = JSON.stringify(data);
+                        } catch (e) {
+                            // إذا لم يكن JSON
+                            if (!value.includes('spoof_ip=')) {
+                                value += '&spoof_ip=' + SPOOF_IP;
+                            }
+                        }
+                    }
+                    return originalSetItem.call(this, key, value);
+                };
+                
+                console.log('✅ IP Spoofing system injected successfully');
+                
+                // 4. اختبار النظام
+                function testSpoofing() {
+                    fetch('https://api.ipify.org?format=json')
+                        .then(res => res.json())
+                        .then(data => {
+                            alert('🎭 اختبار IP Spoofing\\nالـ IP الذي يظهر: ' + data.ip + '\\n(يجب أن يكون مختلفاً عن الـ IP الحقيقي)');
+                        })
+                        .catch(err => {
+                            alert('❌ فشل اختبار النظام: ' + err.message);
+                        });
+                }
+                
+                // 5. العد التنازلي للفتح التلقائي
+                let countdown = 3;
+                const countdownElement = document.getElementById('countdown');
+                
+                const countdownInterval = setInterval(() => {
+                    countdown--;
+                    countdownElement.textContent = countdown;
+                    
+                    if (countdown <= 0) {
+                        clearInterval(countdownInterval);
+                        
+                        // فتح BLS في نافذة جديدة
+                        window.open('${BLS_LIVENESS_URL}', '_blank');
+                        
+                        // إضافة IP إلى الـ URL
+                        const blsUrl = new URL('${BLS_LIVENESS_URL}');
+                        blsUrl.searchParams.set('client_ip', SPOOF_IP);
+                        
+                        // إذا كان هناك رابط للعودة
+                        ${redirect ? `
+                        setTimeout(() => {
+                            const redirectUrl = new URL('${redirect}');
+                            redirectUrl.searchParams.set('spoof_ip', SPOOF_IP);
+                            redirectUrl.searchParams.set('spoof_id', '${spoofData.spoof_id}');
+                            window.location.href = redirectUrl.toString();
+                        }, 2000);` : ''}
+                    }
+                }, 1000);
+                
+                // فتح فوري في نافذة جديدة
+                setTimeout(() => {
+                    const blsUrl = new URL('${BLS_LIVENESS_URL}');
+                    blsUrl.searchParams.set('client_ip', SPOOF_IP);
+                    window.open(blsUrl.toString(), '_blank');
+                }, 500);
+            </script>
+        </body>
+        </html>`;
+        
+        res.send(html);
+        
+    } catch (e) {
+        res.status(500).send(`
+            <html>
+            <body style="font-family: Arial; text-align: center; padding: 50px;">
+                <h2 style="color: #F44336;">❌ خطأ في IP Spoofing</h2>
+                <p>${e.message}</p>
+            </body>
+            </html>
+        `);
+    }
+});
+
+// -------------------- 5. بروكسي مع IP Spoofing --------------------
+app.get('/proxy-spoof-handler', (req, res) => {
+    try {
+        const { 
+            data,            // معرف البيانات
+            spoof_ip,        // IP للتزييف
+            target_ip,       // IP الهدف
+            type = 'bls_liveness'
+        } = req.query;
+
+        if (!data || !spoof_ip) {
+            return res.status(400).send(`
+                <html>
+                <body style="font-family: Arial; text-align: center; padding: 50px;">
+                    <h2 style="color: #F44336;">❌ بيانات غير كافية</h2>
+                    <p>الرجاء توفير data و spoof_ip</p>
+                </body>
+                </html>
+            `);
+        }
+
+        // الحصول على البيانات المخزنة
+        const storedData = dataStorage[data];
+        if (!storedData) {
+            return res.send(`
+                <html>
+                <body style="font-family: Arial; text-align: center; padding: 50px;">
+                    <h2 style="color: #F44336;">❌ البيانات غير موجودة</h2>
+                    <p>الرجاء إنشاء رابط جديد</p>
+                </body>
+                </html>
+            `);
+        }
+
+        // صفحة البروكسي المتقدمة
+        const html = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <title>Proxy Handler with IP Spoofing</title>
+            <meta http-equiv="refresh" content="2;url=${BLS_LIVENESS_URL}">
+            <script>
+                // IP Spoofing Injection
+                const SPOOF_IP = "${spoof_ip}";
+                const TARGET_URL = "${BLS_LIVENESS_URL}";
+                
+                console.log('🎭 Proxy IP Spoofing Active:', SPOOF_IP);
+                
+                // تعديل جميع الطلبات
+                const originalFetch = window.fetch;
+                window.fetch = function(url, options = {}) {
+                    if (url.includes('blsspainglobal.com') || url.includes('ozforensics.com')) {
+                        const headers = new Headers(options.headers || {});
+                        
+                        // إضافة جميع headers IP
+                        const ipHeaders = {
+                            'X-Forwarded-For': SPOOF_IP,
+                            'X-Real-IP': SPOOF_IP,
+                            'X-Client-IP': SPOOF_IP,
+                            'CF-Connecting-IP': SPOOF_IP,
+                            'True-Client-IP': SPOOF_IP
+                        };
+                        
+                        Object.entries(ipHeaders).forEach(([key, value]) => {
+                            headers.set(key, value);
+                        });
+                        
+                        options.headers = headers;
+                        console.log('🎭 Proxying request with IP:', SPOOF_IP);
+                    }
+                    
+                    return originalFetch.call(this, url, options);
+                };
+                
+                // إعادة التوجيه بعد التحميل
+                window.addEventListener('load', () => {
+                    setTimeout(() => {
+                        window.open(TARGET_URL, '_blank');
+                    }, 1000);
+                });
+            </script>
+        </head>
+        <body>
+            <div style="text-align: center; padding: 50px; font-family: Arial;">
+                <h2 style="color: #4A148C;">🎭 Proxy with IP Spoofing</h2>
+                <p>Using IP: <strong>${spoof_ip}</strong></p>
+                <p>Target: ${BLS_LIVENESS_URL}</p>
+                <p>Redirecting in 2 seconds...</p>
+            </div>
+        </body>
+        </html>`;
+        
+        res.send(html);
+        
+    } catch (e) {
+        res.status(500).send(`
+            <html>
+            <body style="font-family: Arial; text-align: center; padding: 50px;">
+                <h2 style="color: #F44336;">❌ Proxy Error</h2>
+                <p>${e.message}</p>
+            </body>
+            </html>
+        `);
+    }
+});
+
+// -------------------- 6. التحقق من IP Spoofing --------------------
+app.get('/api/verify-spoof', (req, res) => {
+    try {
+        const { 
+            spoof_id,
+            test_ip = req.ip || req.connection.remoteAddress
+        } = req.query;
+
+        if (!spoof_id) {
+            return res.status(400).json({ 
+                success: false, 
+                message: 'spoof_id required' 
+            });
+        }
+
+        const spoofData = ipSpoofStorage[spoof_id];
+
+        if (!spoofData) {
+            return res.json({ 
+                success: false, 
+                message: 'Spoof data not found' 
+            });
+        }
+
+        // التحقق من انتهاء الصلاحية
+        const isExpired = spoofData.expires_at && 
+                         new Date(spoofData.expires_at).getTime() < Date.now();
+        
+        if (isExpired) {
+            delete ipSpoofStorage[spoof_id];
+            return res.json({ 
+                success: false, 
+                message: 'Spoof data expired' 
+            });
+        }
+
+        // إرجاع معلومات التحقق
+        res.json({
+            success: true,
+            spoof_id: spoofData.spoof_id,
+            spoof_ip: spoofData.spoof_ip,
+            client_ip: spoofData.client_ip,
+            target_ip: spoofData.target_ip,
+            test_ip: test_ip,
+            is_spoofed: test_ip === spoofData.spoof_ip,
+            stored_at: spoofData.stored_at,
+            expires_at: spoofData.expires_at,
+            status: 'active',
+            headers_count: spoofData.headers_to_spoof ? spoofData.headers_to_spoof.length : 0
+        });
+
+    } catch (e) {
+        res.status(500).json({ 
+            success: false, 
+            message: 'Verification failed', 
+            error: e.message 
+        });
+    }
+});
+
+// -------------------- 7. نظرة عامة على IP Spoofing --------------------
+app.get('/api/spoof-overview', (req, res) => {
+    try {
+        const activeSpoofs = Object.keys(ipSpoofStorage).length;
+        const activeSessions = Object.keys(sessionStorage).length;
+        const activeData = Object.keys(dataStorage).length;
+        
+        res.json({
+            success: true,
+            overview: {
+                ip_spoofing: {
+                    active_spoofs: activeSpoofs,
+                    storage_size: JSON.stringify(ipSpoofStorage).length,
+                    recent_spoofs: Object.keys(ipSpoofStorage).slice(-5)
+                },
+                sessions: {
+                    active_sessions: activeSessions,
+                    storage_size: JSON.stringify(sessionStorage).length
+                },
+                data_storage: {
+                    active_records: activeData,
+                    storage_size: JSON.stringify(dataStorage).length
+                }
+            },
+            endpoints: {
+                store_spoof: 'POST /api/ip-spoof',
+                get_spoof: 'GET /api/get-spoof-ip',
+                open_bls_spoof: 'GET /open-bls-spoof',
+                proxy_spoof: 'GET /proxy-spoof-handler',
+                verify_spoof: 'GET /api/verify-spoof'
+            },
+            server_info: {
+                uptime: process.uptime(),
+                memory_usage: process.memoryUsage(),
+                node_version: process.version,
+                timestamp: new Date().toISOString()
+            }
+        });
+        
+    } catch (e) {
+        res.status(500).json({ 
+            success: false, 
+            message: 'Overview failed', 
+            error: e.message 
+        });
+    }
+});
 // -------------------- Listen --------------------
+// تحديث console.log الأخير:
 app.listen(PORT, () => console.log(`
 🚀 Forbes Selfie Server running!
 📍 Local: http://localhost:${PORT}
 🔗 Test BLS: ${BLS_LIVENESS_URL}
+
 📊 API Endpoints:
   - GET  /api/test
-  - POST /api/encrypt
+  - POST /api/ip-spoof           🎭 NEW: Store IP spoofing data
+  - GET  /api/get-spoof-ip       🎭 NEW: Get spoof IP data
+  - GET  /open-bls-spoof         🎭 NEW: Open BLS with IP spoofing
+  - GET  /proxy-spoof-handler    🎭 NEW: Proxy with IP spoofing
+  - GET  /api/verify-spoof       🎭 NEW: Verify spoof status
+  - GET  /api/spoof-overview     🎭 NEW: Overview of spoof system
   - POST /api/store-data
   - GET  /api/check-selfie-status
   - GET  /open-bls?data=ID&redirect=URL
@@ -1167,6 +2066,7 @@ app.listen(PORT, () => console.log(`
   - GET  /api/get-session?session_id=ID
 
 📈 Storage Stats:
+  - IP Spoof Records: ${Object.keys(ipSpoofStorage).length}
   - Sessions: ${Object.keys(sessionStorage).length}
   - Data Records: ${Object.keys(dataStorage).length}
   - Selfie Records: ${selfieRecords.length}
